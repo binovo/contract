@@ -1117,6 +1117,50 @@ class TestContract(TestContractBase):
             min(self.contract.contract_line_ids.mapped("recurring_next_date")),
         )
 
+    def test_write_contract_line_recurring_next_date_modal(self):
+        """When line_recurrence=True, writing to a line's recurring_next_date
+        should preserve the user's value and not overwrite it
+        with next_period_date_start."""
+        line = self.acct_line
+        original_rnd = line.recurring_next_date
+        original_npds = line.next_period_date_start
+        contract = self.contract
+
+        # Simulate user setting a custom date
+        custom_rnd = original_rnd + relativedelta(days=10)
+        line.write({"recurring_next_date": custom_rnd})
+
+        self.assertEqual(
+            line.recurring_next_date,
+            custom_rnd,
+            "User's custom recurring_next_date was overwritten!",
+        )
+        self.assertEqual(
+            contract.recurring_next_date,
+            custom_rnd,
+            "Contract's rnd should be min of lines (the custom value)",
+        )
+        # next_period_date_start should NOT have changed
+        self.assertEqual(
+            line.next_period_date_start,
+            original_npds,
+            "next_period_date_start changed unexpectedly",
+        )
+
+    def test_write_contract_line_recurring_next_date_form_edit(self):
+        """When line_recurrence=True, editing recurring_next_date via Form.edit(0)
+        should preserve the user's value."""
+        line = self.acct_line
+        manually_set_date = line.recurring_next_date + relativedelta(days=10)
+        with Form(self.contract) as f_contract:
+            with f_contract.contract_line_ids.edit(0) as f_cline:
+                f_cline.recurring_next_date = manually_set_date.strftime("%Y-%m-%d")
+        self.assertEqual(
+            line.recurring_next_date,
+            manually_set_date,
+            "User's custom recurring_next_date was overwritten by Form save!",
+        )
+
     def test_date_end(self):
         """recurring next date for a contract is the min for all lines"""
         self.acct_line.date_end = "2018-01-01"
@@ -2416,3 +2460,17 @@ class TestContract(TestContractBase):
         self.contract3.contract_line_ids.recurring_next_date = fields.Date.today()
         invoice_id = self.contract3.recurring_create_invoice()
         self.assertEqual(invoice_id.invoice_line_ids[0].name, "Header for May Services")
+
+    def test_insert_markers_without_dates(self):
+        """A missing date leaves its markers empty instead of failing."""
+        self.acct_line.name = "#START# - #END# (#INVOICEMONTHNAME#)"
+        self.assertEqual(self.acct_line._insert_markers(False, False), " -  ()")
+        start = to_date("2018-01-01")
+        lang = self.env["res.lang"].search(
+            [("code", "=", self.acct_line.contract_id.partner_id.lang)]
+        )
+        date_format = lang.date_format or "%m/%d/%Y"
+        self.assertEqual(
+            self.acct_line._insert_markers(start, False),
+            "%s -  (January)" % start.strftime(date_format),
+        )
